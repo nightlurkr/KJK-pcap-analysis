@@ -6,14 +6,13 @@
 |---|---:|
 | Ryan Adya Purwanto | 5027231046 |
 | Sebastian Elroi Hasian Panjaitan | 5027251040 |
-| Kaisar Hanif Pratama | 5027241029 |
 
-Mata kuliah: Keamanan Jaringan Komputer  
+KJK A
 Topik: DNS Spoofing, Man-on-the-Side DNS Packet Injection
 
 ## Tujuan
 
-Menganalisis traffic pada file PCAP untuk mencari indikasi serangan DNS spoofing. Analisis berfokus pada query DNS yang menerima dua respons dengan DNS Transaction ID sama, tetapi data jawabannya berbeda.
+Mencari bukti serangan DNS spoofing di dalam file PCAP. Caranya: mencari query DNS yang menerima **dua respons berbeda** padahal Transaction ID-nya sama.
 
 ## File dan sumber
 
@@ -22,115 +21,163 @@ Menganalisis traffic pada file PCAP untuk mencari indikasi serangan DNS spoofing
 - File sumber: [`mycap.pcap`](https://github.com/waytoalpit/ManOnTheSideAttack-DNS-Spoofing/blob/master/mycap.pcap)
 - Referensi skenario: [`README.txt`](https://github.com/waytoalpit/ManOnTheSideAttack-DNS-Spoofing/blob/master/README.txt)
 
-Repositori sumber menjelaskan bahwa PCAP ini dipakai untuk menguji deteksi DNS poisoning. Pada laporan ini, istilah yang digunakan adalah DNS spoofing atau DNS response injection karena bukti utamanya adalah respons DNS yang dipalsukan.
+Repositori sumber memakai PCAP ini untuk menguji deteksi DNS poisoning. Laporan ini memakai istilah **DNS spoofing** atau **DNS response injection**, karena yang terbukti di capture adalah respons DNS yang dipalsukan, bukan cache resolver yang benar-benar teracuni.
 
 ## Ringkasan traffic
 
-File `mycap.pcap` berisi 78 frame (data size 8.060 byte; ukuran file 9.332 byte). Traffic di dalamnya tidak hanya DNS, tetapi juga ARP, ICMP, TCP, TLS, dan NBNS. Fokus analisis berada pada traffic DNS.
+File `mycap.pcap` berisi **78 frame** (ukuran file 9.332 byte). Isinya tidak cuma DNS, tapi juga ARP, ICMP, TCP, TLS, dan NBNS. Analisis ini fokus ke DNS.
 
-Wireshark menampilkan sepuluh DNS query, antara lain untuk `www.qq.com`, `www.facebook.com`, `www.google.com`, `www.sita.com`, `www.flipkart.com`, `www.yamaha.com`, dan `www.yahoo.com`.
+Ada **10 query DNS** untuk 7 domain: `www.qq.com`, `www.facebook.com`, `www.google.com`, `www.sita.com`, `www.flipkart.com`, `www.yamaha.com`, dan `www.yahoo.com`. Beberapa domain diminta dua kali.
+
+![Traffic DNS dalam file PCAP yang dianalisis (filter `dns`).](screenshots/01_dns_overview.png)
+
+*Gambar 1: Traffic DNS dalam file PCAP yang dianalisis (filter `dns`).*
+
+### Hanya ada tiga perangkat di capture ini
+
+Seluruh traffic cuma melibatkan tiga MAC address. Mengenali ketiganya adalah kunci seluruh analisis:
+
+| Peran | MAC address | Ciri khas |
+|---|---|---|
+| Korban | `00:0c:29:44:e5:66` | IP `192.168.88.135`, yang mengirim semua query |
+| **Penyerang** | `00:0c:29:82:7c:24` | Mengaku sebagai `8.8.8.8`, TTL IPv4 selalu **64** |
+| Jalur asli | `00:50:56:f5:0b:f8` | Jalur ke resolver `8.8.8.8` sungguhan, TTL IPv4 selalu **128** |
+
+Penyerang dan resolver asli sama-sama mengirim paket dengan IP sumber `8.8.8.8`. Yang membedakan keduanya adalah **MAC sumber** dan **nilai TTL**. Dua field inilah yang dipakai untuk memisahkan mana respons palsu dan mana yang asli.
 
 ## Langkah analisis di Wireshark
 
 1. Buka `mycap.pcap` di Wireshark.
-2. Masukkan filter berikut untuk melihat seluruh DNS traffic.
+2. Tampilkan semua traffic DNS:
 
    ```text
    dns
    ```
 
-3. Untuk melihat query DNS saja, gunakan filter berikut.
+3. Tampilkan query saja, untuk menghitung ada berapa permintaan:
 
    ```text
    dns.flags.response == 0
    ```
 
-4. Fokuskan analisis pada query `www.qq.com` dengan DNS Transaction ID `0x00e5`.
+4. Ambil satu query sebagai contoh utama, yaitu `www.qq.com` dengan Transaction ID `0x00e5`:
 
    ```text
    dns.id == 0x00e5
    ```
 
-5. Bandingkan paket 5 dan paket 6. Keduanya adalah respons terhadap query yang sama, tetapi IP jawaban, MAC sumber, dan waktu kedatangannya berbeda.
-6. Klik setiap paket dan buka bagian `Ethernet II`, `Internet Protocol Version 4`, `User Datagram Protocol`, dan `Domain Name System` pada panel Packet Details.
+5. Bandingkan paket 5 dan paket 6. Keduanya menjawab query yang sama, tapi isi jawaban, MAC sumber, dan waktu datangnya berbeda.
+6. Klik tiap paket, lalu buka panel Packet Details di bagian `Ethernet II`, `Internet Protocol Version 4`, `User Datagram Protocol`, dan `Domain Name System`.
 
-## Bukti utama
+## Bukti utama: query `www.qq.com`
 
-### Query dan dua respons untuk `www.qq.com`
+| Frame | Waktu | Sumber IP | Tujuan IP | DNS ID | Jenis | Jawaban A |
+|---:|---:|---|---|---|---|---|
+| 2 | 1,959863 s | 192.168.88.135 | 8.8.8.8 | `0x00e5` | Query | - |
+| 5 | 1,979588 s | 8.8.8.8 | 192.168.88.135 | `0x00e5` | Respons | `192.168.88.134` |
+| 6 | 2,217799 s | 8.8.8.8 | 192.168.88.135 | `0x00e5` | Respons | `129.49.1.70`, `129.49.1.73` |
 
-| Frame | Waktu relatif | Sumber IP | Tujuan IP | DNS ID | Jenis | Nama domain | Jawaban A |
-|---:|---:|---|---|---|---|---|---|
-| 2 | 1,959863 s | 192.168.88.135 | 8.8.8.8 | `0x00e5` | Query | `www.qq.com` | - |
-| 5 | 1,979588 s | 8.8.8.8 | 192.168.88.135 | `0x00e5` | Respons | `www.qq.com` | `192.168.88.134` |
-| 6 | 2,217799 s | 8.8.8.8 | 192.168.88.135 | `0x00e5` | Respons | `www.qq.com` | `129.49.1.70`, `129.49.1.73` |
+Satu query, dua jawaban. Paket 5 datang **238,211 ms lebih cepat** daripada paket 6.
 
-Paket 5 muncul 238,211 ms sebelum paket 6. Keduanya menyatakan diri sebagai respons dari `8.8.8.8` untuk query dan Transaction ID yang sama, tetapi alamat IP pada record A berbeda.
+![Satu query `www.qq.com` menerima dua respons dengan jawaban berbeda.](screenshots/02_query_response_qq.png)
 
-Perbedaan pada header Ethernet dan IPv4 memperkuat indikasi pemalsuan:
+*Gambar 2: Satu query `www.qq.com` (DNS ID `0x00e5`) menerima dua respons dengan jawaban IP berbeda, disertai dua paket ICMP Port unreachable.*
+
+Sekarang lihat header Ethernet dan IPv4 dari kedua respons itu:
 
 | Paket | MAC sumber | IP sumber | TTL | Jawaban DNS |
 |---:|---|---|---:|---|
 | 5 | `00:0c:29:82:7c:24` | `8.8.8.8` | 64 | `192.168.88.134` |
 | 6 | `00:50:56:f5:0b:f8` | `8.8.8.8` | 128 | `129.49.1.70`, `129.49.1.73` |
 
-Paket 5 memakai IP sumber yang sama dengan resolver pada paket 6, tetapi MAC sumbernya berbeda. Jawaban `192.168.88.134` juga merupakan alamat privat, sehingga tidak wajar sebagai alamat publik untuk `www.qq.com`. Pola ini konsisten dengan penyerang yang mengirim respons DNS palsu lebih dahulu sambil memalsukan IP sumber resolver.
+Tiga hal yang mencurigakan dari paket 5:
 
-### Bukti pendukung: ICMP Port unreachable
+1. **MAC sumbernya beda** dari paket 6, padahal IP sumbernya sama-sama `8.8.8.8`. Satu IP tidak mungkin punya dua MAC di jaringan yang sama.
+2. **TTL-nya 64, bukan 128.** Paket dari internet melewati banyak router sehingga TTL-nya berkurang. TTL 64 yang bulat menandakan paket dibuat di jaringan lokal, bukan datang dari `8.8.8.8` sungguhan.
+3. **Jawabannya `192.168.88.134`**, sebuah alamat IP privat. Tidak masuk akal `www.qq.com` beralamat privat.
 
-Saat filter `dns.id == 0x00e5` diterapkan, selain paket 2, 5, dan 6 akan muncul juga **paket 7 dan 10** bertipe **ICMP "Destination unreachable (Port unreachable)"**. Ini bukan gangguan, melainkan bukti tambahan yang memperkuat analisis: korban sudah menerima respons palsu (paket 5) lebih dahulu, lalu menutup socket UDP untuk query tersebut. Ketika respons asli (paket 6) tiba, port tujuan sudah tertutup, sehingga korban membalas dengan ICMP Port unreachable. Artinya, respons palsu memang tiba dan diproses lebih dulu oleh korban.
+Kesimpulannya, paket 5 dibuat oleh perangkat di jaringan lokal yang memalsukan IP sumber resolver.
 
-## Screenshot yang wajib diambil
+![Paket 5 — respons palsu.](screenshots/03_forged_response_frame5.png)
 
-Simpan screenshot dengan nama yang sesuai agar mudah dimasukkan ke PPT dan laporan.
+*Gambar 3: Paket 5 — respons palsu mengarah ke `192.168.88.134` (MAC `00:0c:29:82:7c:24`, TTL 64).*
 
-| Nama file screenshot | Tampilan yang harus terlihat | Filter Wireshark | Keterangan untuk caption |
-|---|---|---|---|
-| `01_dns_overview.png` | Packet List berisi traffic DNS dan kolom No., Time, Source, Destination, Protocol, Info | `dns` | Traffic DNS dalam file PCAP yang dianalisis. |
-| `02_query_response_qq.png` | Query `www.qq.com` dan respons-responsnya; filter menampilkan paket 2, 5, 6, serta paket 7 dan 10 (ICMP Port unreachable) | `dns.id == 0x00e5` | Satu query `www.qq.com` menerima dua respons DNS dengan ID sama tetapi jawaban IP berbeda; dua paket ICMP menyertai sebagai bukti pendukung. |
-| `03_forged_response_frame5.png` | Paket 5 terpilih, panel Packet Details terbuka pada Ethernet II, IPv4, UDP, dan DNS | `frame.number == 5` | Respons yang dicurigai palsu mengarah ke `192.168.88.134` (MAC `00:0c:29:82:7c:24`, TTL 64). |
-| `04_legitimate_response_frame6.png` | Paket 6 terpilih, panel Packet Details terbuka pada Ethernet II, IPv4, UDP, dan DNS Answer | `frame.number == 6` | Respons pembanding untuk query yang sama memiliki MAC, TTL, dan IP jawaban berbeda. |
-| `05_repeated_pattern_google.png` | Paket query dan respons untuk `www.google.com` | `dns.id == 0xe38c` | Pola respons DNS yang bertentangan juga muncul pada domain lain. |
+![Paket 6 — respons asli.](screenshots/04_legitimate_response_frame6.png)
 
-Saat mengambil screenshot nomor 3 dan 4, pastikan field berikut terlihat:
+*Gambar 4: Paket 6 — respons asli untuk query yang sama, dengan MAC, TTL, dan A record yang berbeda.*
 
-- DNS Transaction ID: `0x00e5`
-- Query name: `www.qq.com`
-- A record jawaban
-- Source MAC address
-- Source IP address
-- Time-to-live pada IPv4
+## Serangan terjadi pada seluruh query, bukan cuma satu
 
-Jangan hanya mengambil gambar Packet List tanpa panel Packet Details. Detail header Ethernet, IPv4, dan DNS adalah bukti yang menjelaskan mengapa respons paket 5 dicurigai palsu.
+Pola yang sama muncul di **10 dari 10 query DNS** di dalam capture. Tidak ada satu pun query yang lolos:
 
-> Catatan status: screenshot `01`, `02`, dan `03` sudah tersedia di folder `screenshots`. Screenshot `04` (paket 6) dan `05` (pola `www.google.com`) masih perlu diambil.
+| DNS ID | Domain | Jawaban palsu (TTL 64) | Jawaban asli (TTL 128) | Yang tiba duluan |
+|---|---|---|---|---|
+| `0x00e5` | qq.com | `192.168.88.134` | `129.49.1.70`, `129.49.1.73` | **Palsu** (+238 ms) |
+| `0xf97f` | facebook.com | `1.1.1.1` | `31.13.66.36` | Asli |
+| `0xe38c` | google.com | `2.2.2.2` | `172.217.3.4` | **Palsu** |
+| `0xd061` | sita.com | `192.168.88.134` | `88.86.109.120` | **Palsu** |
+| `0xd2d6` | flipkart.com | `192.168.88.134` | `163.53.78.58` | **Palsu** |
+| `0x94f1` | yamaha.com | `192.168.88.134` | `23.203.18.239` | **Palsu** |
+| `0x7bc4` | yahoo.com | `192.168.88.134` | `98.139.183.24` | Asli |
+| `0x95e9` | facebook.com | `1.1.1.1` | `31.13.66.36` | Asli |
+| `0x7d31` | google.com | `2.2.2.2` | `172.217.3.4` | Asli |
+| `0x2b73` | qq.com | `192.168.88.134` | `129.49.1.70`, `129.49.1.73` | **Palsu** |
+
+Dua hal penting yang terlihat dari tabel ini:
+
+**Pertama, IP palsunya berbeda-beda per domain.** Penyerang tidak selalu menjawab `192.168.88.134`. Untuk `facebook.com` dia menjawab `1.1.1.1`, untuk `google.com` dia menjawab `2.2.2.2`. Artinya jawaban palsu memang disiapkan per domain, bukan satu IP untuk semua.
+
+**Kedua, penyerang tidak selalu menang.** Dari 10 percobaan, respons palsunya kalah cepat sebanyak 3 kali (`0x7bc4`, `0x95e9`, `0x7d31`). Justru inilah bukti kuat bahwa serangannya bertipe **man-on-the-side**, bukan man-in-the-middle. Pada man-in-the-middle, seluruh paket melewati penyerang sehingga dia selalu menang. Pada man-on-the-side, penyerang hanya menguping lalu balapan mengirim jawaban, sehingga kadang kalah cepat.
+
+![Pola yang sama pada `www.google.com`.](screenshots/05_repeated_pattern_google.png)
+
+*Gambar 5: Pola respons DNS yang bertentangan juga muncul pada `www.google.com` (filter `dns.id == 0xe38c`), dengan jawaban palsu `2.2.2.2`.*
+
+## Soal paket ICMP Port unreachable
+
+Saat filter `dns.id == 0x00e5` diterapkan, selain paket 2, 5, dan 6 akan muncul juga **paket 7 dan 10** bertipe **ICMP Destination unreachable (Port unreachable)**.
+
+Penjelasannya begini. Korban membuka satu socket UDP untuk menunggu jawaban DNS. Begitu jawaban pertama diterima, socket itu ditutup. Ketika jawaban kedua menyusul, portnya sudah tidak ada, sehingga sistem operasi korban otomatis membalas dengan ICMP Port unreachable.
+
+**Apa yang dibuktikan ICMP ini, dan apa yang tidak:**
+
+- ICMP ini membuktikan korban **hanya menerima satu jawaban**, yaitu yang datang duluan. Jawaban kedua ditolak mentah-mentah.
+- ICMP ini **tidak** membuktikan bahwa jawaban palsu yang diterima. Yang menentukan siapa pemenangnya adalah urutan waktu, bukan ada tidaknya ICMP.
+
+Buktinya, paket ICMP Port unreachable muncul di **seluruh 10 query**, termasuk 3 query yang justru respons **aslinya** yang menang. Jadi ICMP itu netral: dia cuma penanda bahwa ada jawaban kedua yang datang terlambat.
+
+Untuk query `www.qq.com` (`0x00e5`), barulah kita bisa menyimpulkan korban menerima jawaban palsu. Alasannya bukan karena ada ICMP, melainkan karena **paket 5 tercatat tiba 238 ms lebih dulu** daripada paket 6.
 
 ## Hasil identifikasi serangan
 
-Jenis serangan yang ditemukan adalah DNS spoofing atau DNS response injection dengan pola man-on-the-side. Penyerang mengamati query DNS dari korban, lalu mengirim respons palsu yang meniru IP resolver. Respons palsu berusaha mengarahkan korban ke alamat IP yang telah ditentukan penyerang.
+Jenis serangan: **DNS spoofing / DNS response injection dengan pola man-on-the-side.**
 
-Bukti pendukungnya adalah sebagai berikut:
+Cara kerjanya: penyerang menguping query DNS korban di jaringan lokal, lalu secepat mungkin mengirim respons palsu sambil memalsukan IP sumber resolver, berharap jawabannya tiba lebih dulu daripada jawaban asli.
 
-- Satu query DNS untuk `www.qq.com` dengan ID `0x00e5` menerima dua respons.
-- Kedua respons memakai IP sumber `8.8.8.8`, tetapi MAC sumber dan nilai TTL berbeda.
-- Respons paket 5 datang lebih awal dan memberikan jawaban `192.168.88.134`.
-- Respons paket 6 untuk query yang sama memberikan jawaban berbeda, yaitu `129.49.1.70` dan `129.49.1.73`.
-- Setelah respons palsu diterima, korban membalas ICMP Port unreachable terhadap respons asli (paket 7 dan 10), menandakan respons palsu tiba lebih dulu.
-- Pola respons berbeda dengan DNS ID yang sama juga muncul pada beberapa domain lain (`www.google.com`, `www.sita.com`, `www.flipkart.com`, `www.yamaha.com`).
+Ringkasan bukti:
+
+- Seluruh 10 query DNS menerima dua respons dengan Transaction ID yang sama tapi jawaban berbeda.
+- Kedua respons memakai IP sumber `8.8.8.8`, tapi MAC sumber dan TTL-nya berbeda (`00:0c:29:82:7c:24` TTL 64 versus `00:50:56:f5:0b:f8` TTL 128).
+- Jawaban palsu berisi IP yang tidak wajar: alamat privat `192.168.88.134`, atau IP publik yang jelas bukan milik domain terkait seperti `1.1.1.1` dan `2.2.2.2`.
+- Respons palsu menang cepat pada 7 dari 10 query. Kegagalan pada 3 query sisanya justru memperkuat kesimpulan man-on-the-side.
+- Munculnya ICMP Port unreachable pada tiap query menandakan korban hanya memproses satu jawaban saja, yaitu yang tiba lebih dulu.
 
 ## Kesimpulan
 
-Analisis terhadap `mycap.pcap` menunjukkan indikasi kuat DNS spoofing. Pada query `www.qq.com`, sebuah respons DNS yang mengarah ke `192.168.88.134` tiba lebih dahulu daripada respons lain dengan Transaction ID yang sama. Perbedaan MAC sumber, TTL, dan A record menunjukkan bahwa respons pertama tidak berasal dari jalur yang sama dengan respons pembanding, walaupun keduanya memakai IP sumber `8.8.8.8`.
+Analisis `mycap.pcap` menunjukkan bukti kuat adanya DNS spoofing. Ada satu perangkat di jaringan lokal yang menyamar sebagai resolver `8.8.8.8` dan menyuntikkan respons DNS palsu untuk setiap query yang dikirim korban.
 
-Capture ini mendukung kesimpulan adanya upaya pemalsuan respons DNS. Capture saja tidak membuktikan bahwa korban menyimpan jawaban palsu secara permanen di cache resolver atau benar-benar mengakses tujuan palsu. Karena itu, laporan ini menyimpulkan DNS spoofing atau packet injection, bukan menyatakan keberhasilan cache poisoning secara pasti.
+Batasan analisis: capture ini membuktikan adanya **upaya pemalsuan respons DNS** dan membuktikan bahwa respons palsu berhasil diterima korban pada sebagian query. Capture ini **tidak** membuktikan bahwa jawaban palsu tersimpan permanen di cache resolver, atau bahwa korban benar-benar sampai mengakses server palsu. Karena itu laporan ini menyimpulkan DNS spoofing / packet injection, bukan cache poisoning yang berhasil sepenuhnya.
 
-## Pembagian bagian PPT
+## Daftar screenshot
 
-| Slide | Isi |
-|---:|---|
-| 1 | Judul, anggota kelompok, topik DNS Spoofing. |
-| 2 | Tujuan, sumber PCAP, dan alasan memilih `mycap.pcap`. |
-| 3 | Ringkasan traffic dan langkah filter `dns`. Gunakan screenshot 1. |
-| 4 | Bukti utama query serta dua respons `www.qq.com`. Gunakan screenshot 2. |
-| 5 | Detail respons palsu pada paket 5. Gunakan screenshot 3. |
-| 6 | Perbandingan dengan paket 6 dan pola tambahan. Gunakan screenshot 4 dan 5. |
-| 7 | Jenis serangan, kesimpulan, dan batasan analisis. |
+Seluruh screenshot tersimpan di folder `screenshots` dan sudah ditampilkan pada bagian analisis di atas.
+
+| Nama file | Filter Wireshark | Isi |
+|---|---|---|
+| `01_dns_overview.png` | `dns` | Seluruh traffic DNS dalam PCAP. |
+| `02_query_response_qq.png` | `dns.id == 0x00e5` | Query `www.qq.com` dengan dua respons berbeda, plus dua paket ICMP. |
+| `03_forged_response_frame5.png` | `frame.number == 5` | Detail respons palsu: `192.168.88.134`, MAC `00:0c:29:82:7c:24`, TTL 64. |
+| `04_legitimate_response_frame6.png` | `frame.number == 6` | Detail respons asli: MAC `00:50:56:f5:0b:f8`, TTL 128. |
+| `05_repeated_pattern_google.png` | `dns.id == 0xe38c` | Pola yang sama pada `www.google.com`, jawaban palsu `2.2.2.2`. |
+
+Untuk screenshot 3 dan 4, pastikan panel Packet Details terbuka dan field berikut terlihat: DNS Transaction ID, query name, A record, source MAC, source IP, dan TTL pada IPv4. Packet List saja tidak cukup, karena justru detail header itulah buktinya.
